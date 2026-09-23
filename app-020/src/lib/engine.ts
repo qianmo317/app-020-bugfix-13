@@ -3,6 +3,7 @@ import type {
   Pt,
   Room,
   RuleSet,
+  UncoveredRegion,
   ValidationItem,
   ValidationResult,
   FacilityKind,
@@ -29,7 +30,11 @@ export type CoverageResult = {
   pass: boolean;
   samples: Pt[]; // 未覆盖代表点（mm），最多 50 个
   cells: Pt[]; // 全部未覆盖栅格点（用于画布高亮），仅按需计算
+  regions: UncoveredRegion[]; // 未覆盖聚簇区域（按面积降序，最多 8 块），可逐块定位
 };
+
+/** 一次最多报告多少块未覆盖区域（避免大平面刷屏） */
+const MAX_COVERAGE_REGIONS = 8;
 
 /**
  * 灭火器保护半径覆盖：0.5m 栅格采样近似面积差集。
@@ -43,8 +48,9 @@ export function computeCoverage(
 ): CoverageResult {
   const cells: Pt[] = [];
   const samples: Pt[] = [];
+  const regions: UncoveredRegion[] = [];
   if (!rooms.length) {
-    return { uncoveredM2: 0, totalM2: 0, pass: true, samples, cells };
+    return { uncoveredM2: 0, totalM2: 0, pass: true, samples, cells, regions };
   }
   const bb = bboxOf(rooms.map((r) => r.polygon));
   const step = COVERAGE_STEP_MM;
@@ -71,6 +77,29 @@ export function computeCoverage(
     }
     return false;
   };
+  // 到最近灭火器的距离（mm）：3×3 邻桶内最小值 ≤ 桶边长时即为全局最近；
+  // 否则最近点可能在邻桶之外（距离 > 桶边长），退化为全表扫描保证正确
+  const nearestMmAt = (x: number, y: number): number => {
+    const bi = Math.floor(x / bucket);
+    const bj = Math.floor(y / bucket);
+    let best = Infinity;
+    for (let dj = -1; dj <= 1; dj++) {
+      for (let di = -1; di <= 1; di++) {
+        const list = hash.get(`${bi + di},${bj + dj}`);
+        if (!list) continue;
+        for (const p of list) {
+          const d = Math.hypot(p.x - x, p.y - y);
+          if (d < best) best = d;
+        }
+      }
+    }
+    if (best <= bucket) return best;
+    for (const p of extinguisherPts) {
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < best) best = d;
+    }
+    return best;
+  };
 
   // 格心采样：每个 0.5m 格子用其中心点判定，格心必在多边形内部（射线法排除边界点的问题
   // 不会出现），总面积 = 格数 × 0.25㎡ 与手工核算一致，未覆盖面积误差 ≤ 每格半格 ≈ 10% 内
@@ -96,6 +125,9 @@ export function computeCoverage(
   }
   let uncovered = 0;
   let total = 0;
+  // 未覆盖格标记与最近灭火器距离（仅未覆盖格写入），供聚簇成区域用
+  const uncov = new Uint8Array(nx * ny);
+  const nearMm = new Float64Array(nx * ny);
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
       if (!inside[j * nx + i]) continue;
@@ -107,14 +139,58 @@ export function computeCoverage(
         const p = { x, y };
         cells.push(p);
         if (samples.length < 50) samples.push(p);
+        uncov[j * nx + i] = 1;
+        nearMm[j * nx + i] = nearestMmAt(x, y);
       }
     }
   }
   const cellAreaM2 = (step / MM_PER_M) ** 2;
+  // 未覆盖格按 8 邻接聚簇成「区域」：每块给出面积与最远格心，
+  // 以及该点距最近灭火器还差多少米才够得着（nearestM − 半径）
+  if (uncovered) {
+    const visited = new Uint8Array(nx * ny);
+    const stack: number[] = [];
+    for (let s = 0; s < nx * ny; s++) {
+      if (!uncov[s] || visited[s]) continue;
+      let count = 0;
+      let worstIdx = s;
+      visited[s] = 1;
+      stack.push(s);
+      while (stack.length) {
+        const cur = stack.pop()!;
+        count++;
+        if (nearMm[cur] > nearMm[worstIdx]) worstIdx = cur;
+        const ci = cur % nx;
+        const cj = (cur / nx) | 0;
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            if (!di && !dj) continue;
+            const ii = ci + di;
+            const jj = cj + dj;
+            if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+            const nb = jj * nx + ii;
+            if (uncov[nb] && !visited[nb]) {
+              visited[nb] = 1;
+              stack.push(nb);
+            }
+          }
+        }
+      }
+      const nearestM = nearMm[worstIdx] / MM_PER_M;
+      regions.push({
+        point: { x: x0 + (worstIdx % nx) * step, y: y0 + ((worstIdx / nx) | 0) * step },
+        areaM2: count * cellAreaM2,
+        nearestM,
+        gapM: nearestM - radiusM,
+      });
+    }
+    regions.sort((a, b) => b.areaM2 - a.areaM2);
+    if (regions.length > MAX_COVERAGE_REGIONS) regions.length = MAX_COVERAGE_REGIONS;
+  }
   const uncoveredM2 = uncovered * cellAreaM2;
   const totalM2 = total * cellAreaM2;
   const threshold = Math.max(2, totalM2 * 0.05);
-  return { uncoveredM2, totalM2, pass: uncoveredM2 <= threshold, samples, cells: withCells ? cells : [] };
+  return { uncoveredM2, totalM2, pass: uncoveredM2 <= threshold, samples, cells: withCells ? cells : [], regions };
 }
 
 function roomWorstTravelM(room: Room, doors: Pt[], doorPathMm: number[], exitsInRoom: Pt[]): { worstM: number; point: Pt } | null {
@@ -305,15 +381,17 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
     items.push({ severity: 'error', type: 'EXIT_COUNT', message: '未布置任何安全出口' });
   }
 
-  // 灭火器覆盖（第一台 + 默认半径）
-  const firstExt = floor.facilities.find((f) => f.kind === 'extinguisher');
-  const coverage = floor.rooms.length && firstExt
-    ? computeCoverage(floor.rooms, [{ x: firstExt.x, y: firstExt.y }], 15)
+  // 灭火器覆盖（全部点位 + 当前规则半径）
+  const extPts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
+  const coverage = floor.rooms.length && extPts.length
+    ? computeCoverage(floor.rooms, extPts, rules.extinguisherRadiusM)
     : null;
   if (coverage && coverage.pass === false) {
+    const worst = coverage.regions.reduce((a, b) => (b.gapM > a.gapM ? b : a));
     items.push({ severity: 'warning', type: 'COVERAGE_UNCOVERED', value: coverage.uncoveredM2,
-      point: coverage.samples[0],
-      message: `灭火器保护半径（15m）未覆盖面积 ${coverage.uncoveredM2.toFixed(1)}㎡，超过阈值 max(2㎡, 5%)` });
+      limit: Math.max(2, coverage.totalM2 * 0.05),
+      point: worst.point,
+      message: `灭火器保护半径（${rules.extinguisherRadiusM}m）未覆盖面积 ${coverage.uncoveredM2.toFixed(1)}㎡，超过阈值 max(2㎡, 5%)；最远未覆盖点距最近灭火器 ${worst.nearestM.toFixed(1)}m（超半径 ${worst.gapM.toFixed(1)}m）` });
   }
 
   // 安全出口数量 vs 面积/人数
@@ -379,7 +457,7 @@ export function validateFloor(floor: Floor, rules: RuleSet, now: number = Date.n
     travelWorstPoint: worstPoint,
     deadEndM,
     coverage: coverage
-      ? { uncoveredM2: coverage.uncoveredM2, totalM2: coverage.totalM2, pass: coverage.pass, samples: coverage.samples }
+      ? { uncoveredM2: coverage.uncoveredM2, totalM2: coverage.totalM2, pass: coverage.pass, samples: coverage.samples, regions: coverage.regions }
       : null,
     exits: { present: exits.length, required },
     rulesSnapshot: {

@@ -61,9 +61,20 @@ export function ValidationPanel({ floorId, result, busy, rules, onLocate }: Prop
               <b className={result.coverage && !result.coverage.pass ? 'bad' : ''}>
                 {result.coverage ? `${result.coverage.uncoveredM2.toFixed(1)}㎡` : '—'}
               </b>
-              <span>半径 {rules.extinguisherRadiusM}m</span>
-              {result.coverage && result.coverage.samples.length > 0 && (
-                <button className="ghost" onClick={() => locateCoverage(result.coverage!.samples[0])}>看未覆盖点</button>
+              <span>半径 {result.rulesSnapshot.extinguisherRadiusM}m（判定值）</span>
+              {(result.coverage?.regions?.length ?? 0) > 0 && (
+                <div className="covregions">
+                  {result.coverage!.regions.map((rg, i) => (
+                    <button
+                      key={i}
+                      className="ghost covregion"
+                      title={`定位到该区域最差点（${(rg.point.x / 1000).toFixed(1)}m, ${(rg.point.y / 1000).toFixed(1)}m）`}
+                      onClick={() => locateCoverage(rg.point)}
+                    >
+                      区域{i + 1}：缺 {rg.areaM2.toFixed(1)}㎡ · 距最近灭火器 {rg.nearestM.toFixed(1)}m（超半径 {rg.gapM.toFixed(1)}m）
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
             <div className="stat">

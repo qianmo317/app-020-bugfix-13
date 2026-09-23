@@ -100,4 +100,72 @@ describe('灭火器覆盖（栅格采样 vs 人工核算）', () => {
     expect(r.uncoveredM2).toBeLessThan(110);
     expect(r.pass).toBe(false);
   });
+
+  it('C11 多台灭火器联合判定：两台各管一段合起来全覆盖（回归：只算第一台）', () => {
+    // 50m 走道两台灭火器 (12.5,1)/(37.5,1)，办公规则 r20：单台 r15 必露 20㎡+，两台联合全覆盖
+    const { floor, rules } = mkFloor([mkRoom('走道', 'corridor', rect(0, 0, 50, 2))], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'exit', x: 49.5, y: 1 },
+      { kind: 'extinguisher', x: 12.5, y: 1 },
+      { kind: 'extinguisher', x: 37.5, y: 1 },
+    ]);
+    const v = validateFloor(floor, rules);
+    expect(v.coverage).not.toBeNull();
+    expect(v.coverage!.uncoveredM2).toBe(0);
+    expect(v.coverage!.pass).toBe(true);
+    expect(v.items.some((i) => i.type === 'COVERAGE_UNCOVERED')).toBe(false);
+    expect(v.pass).toBe(true);
+  });
+
+  it('C12 判定半径跟随当前规则：r15 不合规、r20 合规，结论文案与快照同规则一致', () => {
+    const { floor } = mkFloor([mkRoom('走道', 'corridor', rect(0, 0, 41, 2))], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'exit', x: 40.5, y: 1 },
+      { kind: 'extinguisher', x: 20.5, y: 1 },
+    ]);
+    const tight = validateFloor(floor, ruleWith(DEFAULT_RULES.office, { extinguisherRadiusM: 15 }));
+    const item = tight.items.find((i) => i.type === 'COVERAGE_UNCOVERED');
+    expect(item).toBeDefined();
+    expect(item!.message).toContain('（15m）'); // 结论里写的半径 = 判定用的半径
+    expect(tight.rulesSnapshot.extinguisherRadiusM).toBe(15);
+    expect(tight.coverage!.pass).toBe(false);
+
+    const loose = validateFloor(floor, ruleWith(DEFAULT_RULES.office, { extinguisherRadiusM: 20 }));
+    expect(loose.items.some((i) => i.type === 'COVERAGE_UNCOVERED')).toBe(false);
+    expect(loose.coverage!.pass).toBe(true);
+    expect(loose.rulesSnapshot.extinguisherRadiusM).toBe(20);
+    expect(loose.pass).toBe(true);
+    // 合格但仍有小块未覆盖时，区域清单照样给出（可逐块定位）
+    expect(loose.coverage!.regions.length).toBe(2);
+  });
+
+  it('C13 未覆盖区域聚簇：可定位、能说明距最近灭火器差多远', () => {
+    const room = mkRoom('走道', 'corridor', rect(0, 0, 41, 2));
+    const r = computeCoverage([room], [pt(20.5, 1)], 12);
+    expect(r.regions.length).toBe(2); // 东西两端各一块
+    const west = r.regions.find((g) => g.point.x < 20.5 * MM_PER_M)!;
+    const east = r.regions.find((g) => g.point.x > 20.5 * MM_PER_M)!;
+    for (const g of [west, east]) {
+      expect(g.areaM2).toBeGreaterThan(15.3); // 人工 8.5m × 2m = 17㎡ ±10%
+      expect(g.areaM2).toBeLessThan(18.7);
+      expect(g.nearestM).toBeGreaterThan(19.8); // 最远格心 (0.25,0.25) 距 (20.5,1) ≈ 20.26m
+      expect(g.nearestM).toBeLessThan(20.8);
+      expect(g.gapM).toBeCloseTo(g.nearestM - 12, 6); // 差多远 = 最近距离 − 判定半径
+    }
+    expect(west.point.x / MM_PER_M).toBeLessThan(1); // 定位点落在西端格心
+    expect(east.point.x / MM_PER_M).toBeGreaterThan(40);
+
+    // 引擎集成：区域随校验结果返回，COVERAGE_UNCOVERED 项写清最差差距并给定位点
+    const { floor } = mkFloor([room], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'exit', x: 40.5, y: 1 },
+      { kind: 'extinguisher', x: 20.5, y: 1 },
+    ], 'factory'); // 厂规 r12
+    const v = validateFloor(floor, DEFAULT_RULES.factory);
+    expect(v.coverage!.regions.length).toBe(2);
+    const item = v.items.find((i) => i.type === 'COVERAGE_UNCOVERED')!;
+    expect(item.message).toContain('（12m）');
+    expect(item.message).toContain('超半径');
+    expect(item.point).toBeDefined();
+  });
 });

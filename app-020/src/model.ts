@@ -89,6 +89,14 @@ export type RuleSet = {
 
 export type ValidationSeverity = 'error' | 'warning';
 
+/** 一块未覆盖区域（0.5m 栅格 8 邻接聚簇） */
+export type UncoveredRegion = {
+  point: Pt; // 区域内距最近灭火器最远的格心（mm），用于图纸定位
+  areaM2: number; // 区域面积（㎡）
+  nearestM: number; // 代表点到最近灭火器的距离（m）
+  gapM: number; // 超出保护半径的距离（m）= nearestM − 判定半径
+};
+
 export type ValidationItem = {
   severity: ValidationSeverity;
   type: string;
@@ -107,7 +115,7 @@ export type ValidationResult = {
   travelWorstM: number | null;
   travelWorstPoint?: Pt | null;
   deadEndM: number | null;
-  coverage: { uncoveredM2: number; totalM2: number; pass: boolean; samples: Pt[] } | null;
+  coverage: { uncoveredM2: number; totalM2: number; pass: boolean; samples: Pt[]; regions: UncoveredRegion[] } | null;
   exits: { present: number; required: number };
   rulesSnapshot: {
     buildingKind: BuildingKind;

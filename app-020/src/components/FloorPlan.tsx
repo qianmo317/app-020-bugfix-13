@@ -165,7 +165,7 @@ export function FloorPlan(props: FloorPlanProps) {
         />
       ))}
       {coverageCells && (
-        <g fill="#ef5350" opacity={0.45}>
+        <g fill="#ef5350" opacity={0.45} pointerEvents="none">
           {coverageCells.map((c, i) => (
             <rect key={i} x={c.x - 250} y={c.y - 250} width={500} height={500} />
           ))}

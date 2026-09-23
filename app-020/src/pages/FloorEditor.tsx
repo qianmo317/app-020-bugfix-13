@@ -97,6 +97,15 @@ export function FloorEditor({ floorId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [floorId, floor?.version, rulesVersion]);
 
+  // 未覆盖高亮打开期间，楼层或规则（半径）变化后自动按当前规则重算，保持图上与结论一致
+  const coverageOn = coverageCells !== null;
+  useEffect(() => {
+    if (!coverageOn || !floor || !rules) return;
+    const exts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
+    setCoverageCells(computeCoverage(floor.rooms, exts, rules.extinguisherRadiusM, true).cells);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [floorId, floor?.version, rulesVersion, coverageOn]);
+
   if (!floor || !rules) {
     return <div className="page">楼层不存在。<Link to="/">返回首页</Link></div>;
   }
@@ -228,9 +237,14 @@ export function FloorEditor({ floorId }: Props) {
   };
 
   const showCoverage = () => {
+    if (coverageCells !== null) {
+      setCoverageCells(null);
+      return;
+    }
     const exts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
-    const res = computeCoverage(floor.rooms, exts, 15, false);
-    setCoverageCells(res.cells.length ? res.cells : null);
+    // 与校验同口径：全部灭火器点位 + 当前规则半径；withCells=true 才返回高亮栅格
+    const res = computeCoverage(floor.rooms, exts, rules.extinguisherRadiusM, true);
+    setCoverageCells(res.cells);
   };
 
   const importUnderlay = async (file: File) => {
