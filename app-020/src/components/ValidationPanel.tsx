@@ -1,4 +1,4 @@
-import type { Pt, RuleSet, ValidationResult } from '../model';
+import type { Pt, RuleSet, ValidationResult, CoverageRegion } from '../model';
 import { useStore } from '../store/store';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -19,13 +19,12 @@ type Props = {
   busy: boolean;
   rules: RuleSet;
   onLocate: (pt: Pt | null, sel?: { type: 'room' | 'facility'; id: string }) => void;
+  /** 定位到某块未覆盖区域（在图上高亮并显示差距说明） */
+  onLocateRegion?: (region: CoverageRegion) => void;
 };
 
-export function ValidationPanel({ floorId, result, busy, rules, onLocate }: Props) {
+export function ValidationPanel({ floorId, result, busy, rules, onLocate, onLocateRegion }: Props) {
   const floor = useStore((s) => s.floors[floorId]);
-
-  const locateCoverage = (pt: Pt) => onLocate(pt);
-
   return (
     <section className="validation">
       <h4>
@@ -61,9 +60,9 @@ export function ValidationPanel({ floorId, result, busy, rules, onLocate }: Prop
               <b className={result.coverage && !result.coverage.pass ? 'bad' : ''}>
                 {result.coverage ? `${result.coverage.uncoveredM2.toFixed(1)}㎡` : '—'}
               </b>
-              <span>半径 {rules.extinguisherRadiusM}m</span>
-              {result.coverage && result.coverage.samples.length > 0 && (
-                <button className="ghost" onClick={() => locateCoverage(result.coverage!.samples[0])}>看未覆盖点</button>
+              <span>半径 {result.coverage?.radiusM ?? rules.extinguisherRadiusM}m</span>
+              {result.coverage && result.coverage.regions.length > 0 && onLocateRegion && (
+                <button className="ghost" onClick={() => onLocateRegion(result.coverage!.regions[0])}>看未覆盖区域</button>
               )}
             </div>
             <div className="stat">
@@ -74,6 +73,29 @@ export function ValidationPanel({ floorId, result, busy, rules, onLocate }: Prop
               <span>现有/需要</span>
             </div>
           </div>
+          {result.coverage && result.coverage.regions.length > 0 && (
+            <div className="coverage-regions">
+              <p className="hint">
+                未覆盖区域 {result.coverage.regions.length} 块（保护半径 {result.coverage.radiusM}m，点击定位）：
+              </p>
+              {result.coverage.regions.map((rg, i) => (
+                <button
+                  key={i}
+                  className="item warning region-item"
+                  onClick={() => onLocateRegion?.(rg)}
+                  title="在图纸上定位该区域"
+                >
+                  <span className="dot warning" />
+                  <span>
+                    <b>区域 {i + 1}</b>　{rg.areaM2.toFixed(1)}㎡；
+                    最差点距最近灭火器 {rg.nearestDistanceM.toFixed(1)}m，
+                    <b className="bad">差 {rg.gapM.toFixed(1)}m</b>
+                    {' '}（({(rg.point.x / 1000).toFixed(1)}, {(rg.point.y / 1000).toFixed(1)})m）
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="items">
             {result.items.length === 0 && <p className="hint">无不合规项</p>}
             {result.items.map((it, i) => (

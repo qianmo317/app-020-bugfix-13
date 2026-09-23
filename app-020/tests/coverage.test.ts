@@ -101,3 +101,83 @@ describe('灭火器覆盖（栅格采样 vs 人工核算）', () => {
     expect(r.pass).toBe(false);
   });
 });
+
+describe('灭火器覆盖（缺陷回归：全部点位 / 当前半径 / 区域可点）', () => {
+  it('C11 validateFloor 按楼层上【全部】灭火器点位取并集（多台补盲后合规）', () => {
+    const { floor, rules } = mkFloor([mkRoom('走道', 'corridor', rect(0, 0, 70, 2))], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'exit', x: 69.5, y: 1 },
+      { kind: 'extinguisher', x: 17.5, y: 1 },
+      { kind: 'extinguisher', x: 52.5, y: 1 },
+    ]);
+    const r = validateFloor(floor, rules); // 办公 r20：两台并集全覆盖
+    expect(r.coverage?.uncoveredM2).toBe(0);
+    expect(r.coverage?.pass).toBe(true);
+    expect(r.pass).toBe(true);
+    // 只按第一台（17.5m 处）算，东端必有未覆盖，证明结果确实来自全部点位
+    const onlyFirst = computeCoverage(floor.rooms, [pt(17.5, 1)], 20);
+    expect(onlyFirst.uncoveredM2).toBeGreaterThan(15);
+  });
+
+  it('C12 判定半径随当前规则：自定义 r15 时结果与消息都按 15m，而不是老的默认值', () => {
+    const room = mkRoom('走道', 'corridor', rect(0, 0, 41, 2));
+    const { floor } = mkFloor([room], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'exit', x: 40.5, y: 1 },
+      { kind: 'extinguisher', x: 20.5, y: 1 },
+    ], 'factory');
+    const v = validateFloor(floor, ruleWith(DEFAULT_RULES.factory, { extinguisherRadiusM: 15 }));
+    expect(v.coverage?.radiusM).toBe(15);
+    // 41×2 走道、中心 r15：两端各约 5m 条带 ≈20㎡（0.5m 格心采样上界取整为 22㎡）> 阈值
+    expect(v.coverage?.uncoveredM2).toBeGreaterThan(18);
+    expect(v.coverage?.uncoveredM2).toBeLessThanOrEqual(23);
+    const item = v.items.find((i) => i.type === 'COVERAGE_UNCOVERED');
+    expect(item?.message).toContain('15m');
+    expect(item?.message).not.toContain('12m');
+    // 与直接用 15 计算一致（不是按厂规 12 或旧硬编码）
+    const direct = computeCoverage([room], [pt(20.5, 1)], 15, true);
+    expect(v.coverage!.uncoveredM2).toBeCloseTo(direct.uncoveredM2, 5);
+  });
+
+  it('C13 withCells 产出连通未覆盖区域，每块带代表点与「差多远」', () => {
+    const room = mkRoom('走道', 'corridor', rect(0, 0, 50, 2));
+    const r = computeCoverage([room], [pt(25, 1)], 10, true);
+    // 东西两端各一块（中段被覆盖隔开）
+    expect(r.regions.length).toBe(2);
+    for (const rg of r.regions) {
+      expect(rg.cells.length).toBeGreaterThan(0);
+      expect(rg.radiusM).toBe(10);
+      expect(rg.gapM).toBeCloseTo(Math.max(0, rg.nearestDistanceM - 10), 6);
+      // 代表点是该区域内距灭火器最远的格心
+      for (const c of rg.cells) {
+        expect(Math.hypot(c.x - 25000, c.y - 1000)).toBeLessThanOrEqual(
+          Math.hypot(rg.point.x - 25000, rg.point.y - 1000) + 1e-6,
+        );
+      }
+    }
+    // 西端点 ≈ x0.25m，距中心 24.75m → 差 14.75m；东端对称，两块按 gap 并列、面积相等
+    const west = r.regions.find((rg) => rg.point.x < 25000)!;
+    expect(west.point.x / MM_PER_M).toBeCloseTo(0.25, 1);
+    expect(west.nearestDistanceM).toBeCloseTo(24.75, 1);
+    expect(west.gapM).toBeCloseTo(14.75, 1);
+    // 区域面积之和 = 未覆盖总面积
+    const sum = r.regions.reduce((s, rg) => s + rg.areaM2, 0);
+    expect(sum).toBeCloseTo(r.uncoveredM2, 6);
+    // 不带 withCells 时不产出区域（普通校验路径的开销约定）
+    const light = computeCoverage([room], [pt(25, 1)], 10);
+    expect(light.regions).toEqual([]);
+    expect(light.cells).toEqual([]);
+  });
+
+  it('C14 validateFloor 的未覆盖项携带区域代表点，供面板逐块定位', () => {
+    const room = mkRoom('走道', 'corridor', rect(0, 0, 50, 2));
+    const { floor, rules } = mkFloor([room], [
+      { kind: 'exit', x: 0.5, y: 1 },
+      { kind: 'extinguisher', x: 25, y: 1 },
+    ]);
+    const v = validateFloor(floor, ruleWith(rules, { extinguisherRadiusM: 10 }));
+    expect(v.coverage?.regions.length).toBe(2);
+    const item = v.items.find((i) => i.type === 'COVERAGE_UNCOVERED');
+    expect(item?.point).toEqual(v.coverage!.regions[0].point);
+  });
+});

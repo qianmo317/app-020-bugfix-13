@@ -111,6 +111,12 @@ export type FloorPlanProps = {
   draftPoints: Pt[];
   draftCursor: Pt | null;
   coverageCells: Pt[] | null;
+  /** 保护圈：半径（米）。给定时对楼层内全部灭火器画保护圆 */
+  coverageRadiusM?: number | null;
+  /** 未覆盖栅格点击回调（参数为格心坐标） */
+  onCoverageCellPointerDown?: (pt: Pt, e: RPointerEvent<SVGRectElement>) => void;
+  /** 定位气泡：圈出点位并附文字说明（如区域差距） */
+  callout?: { point: Pt; label: string | null } | null;
   highlight: Pt | null;
   markPt: Pt | null;
   onRoomPointerDown?: (e: RPointerEvent<SVGGElement>, room: Room) => void;
@@ -123,7 +129,8 @@ export function FloorPlan(props: FloorPlanProps) {
   const {
     floor, view, svgRef, underlayUrl, showGrid = true,
     selected, drag, dragDelta, draftPoints, draftCursor,
-    coverageCells, highlight, markPt,
+    coverageCells, coverageRadiusM, onCoverageCellPointerDown, callout,
+    highlight, markPt,
     onRoomPointerDown, onFacilityPointerDown, onMarkPointerDown,
   } = props;
   void svgRef;
@@ -164,10 +171,46 @@ export function FloorPlan(props: FloorPlanProps) {
           onPointerDown={onRoomPointerDown ?? (() => {})}
         />
       ))}
+      {coverageRadiusM != null && (
+        <g>
+          {floor.facilities
+            .filter((f) => f.kind === 'extinguisher')
+            .map((f) => (
+              <circle
+                key={`cov-${f.id}`}
+                cx={f.x}
+                cy={f.y}
+                r={coverageRadiusM * 1000}
+                fill="#ef5350"
+                fillOpacity={0.07}
+                stroke="#e53935"
+                strokeWidth={1.5}
+                strokeDasharray="1200 700"
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            ))}
+        </g>
+      )}
       {coverageCells && (
         <g fill="#ef5350" opacity={0.45}>
           {coverageCells.map((c, i) => (
-            <rect key={i} x={c.x - 250} y={c.y - 250} width={500} height={500} />
+            <rect
+              key={i}
+              x={c.x - 250}
+              y={c.y - 250}
+              width={500}
+              height={500}
+              style={{ cursor: onCoverageCellPointerDown ? 'pointer' : 'default' }}
+              onPointerDown={
+                onCoverageCellPointerDown
+                  ? (e) => {
+                      e.stopPropagation();
+                      onCoverageCellPointerDown(c, e);
+                    }
+                  : undefined
+              }
+            />
           ))}
         </g>
       )}
@@ -204,6 +247,39 @@ export function FloorPlan(props: FloorPlanProps) {
         <g pointerEvents="none">
           <circle cx={highlight.x} cy={highlight.y} r={1200} fill="none" stroke="#e53935" strokeWidth={3} vectorEffect="non-scaling-stroke" />
           <circle cx={highlight.x} cy={highlight.y} r={300} fill="#e53935" />
+        </g>
+      )}
+      {callout && (
+        <g pointerEvents="none">
+          <circle cx={callout.point.x} cy={callout.point.y} r={1100} fill="none" stroke="#c62828" strokeWidth={4} vectorEffect="non-scaling-stroke" />
+          <circle cx={callout.point.x} cy={callout.point.y} r={280} fill="#c62828" />
+          {callout.label && (
+            <>
+              <rect
+                x={callout.point.x - 6500}
+                y={callout.point.y - 3600}
+                width={13000}
+                height={1900}
+                rx={200}
+                fill="#fff"
+                fillOpacity={0.92}
+                stroke="#c62828"
+                strokeWidth={2}
+                vectorEffect="non-scaling-stroke"
+              />
+              <text
+                x={callout.point.x}
+                y={callout.point.y - 2350}
+                textAnchor="middle"
+                fontSize={820}
+                fill="#b71c1c"
+                fontWeight="bold"
+                style={{ userSelect: 'none' }}
+              >
+                {callout.label}
+              </text>
+            </>
+          )}
         </g>
       )}
       {markPt && (

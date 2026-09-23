@@ -100,6 +100,16 @@ export type ValidationItem = {
   limit?: number;
 };
 
+/** 一块连通的未覆盖区域（栅格连通域） */
+export type CoverageRegion = {
+  point: Pt; // 区域代表点：距最近灭火器最远的格心（图纸定位用，mm）
+  cells: Pt[]; // 区域全部未覆盖栅格（mm，画布高亮用）
+  areaM2: number;
+  nearestDistanceM: number; // 代表点到最近灭火器的直线距离
+  gapM: number; // 差多远：nearestDistanceM − 保护半径（>0）
+  radiusM: number; // 判定时使用的保护半径
+};
+
 export type ValidationResult = {
   checkedAt: string;
   pass: boolean;
@@ -107,7 +117,14 @@ export type ValidationResult = {
   travelWorstM: number | null;
   travelWorstPoint?: Pt | null;
   deadEndM: number | null;
-  coverage: { uncoveredM2: number; totalM2: number; pass: boolean; samples: Pt[] } | null;
+  coverage: {
+    uncoveredM2: number;
+    totalM2: number;
+    pass: boolean;
+    radiusM: number; // 本次判定实际使用的保护半径（= 当前规则值）
+    samples: Pt[];
+    regions: CoverageRegion[]; // 各块未覆盖区域，按超半径差距降序
+  } | null;
   exits: { present: number; required: number };
   rulesSnapshot: {
     buildingKind: BuildingKind;

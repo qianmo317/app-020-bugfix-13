@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Facility, Pt, Room, RoomUsage } from '../model';
+import type { Facility, Pt, Room, RoomUsage, CoverageRegion } from '../model';
 import { USAGE_LABELS, FACILITY_LABELS } from '../model';
 import { addRoom, addFacility, deleteFacility, deleteRoom, moveFacility, moveRoom, updateRoom, updateFacility, setUnderlay, setLastValidation, useStore, addCheck, deleteCheck } from '../store/store';
 import { floorLabel } from '../store/id';
@@ -36,6 +36,8 @@ export function FloorEditor({ floorId }: Props) {
   const [drag, setDrag] = useState<DragState>(null);
   const [dragDelta, setDragDelta] = useState<Pt>({ x: 0, y: 0 });
   const [coverageCells, setCoverageCells] = useState<Pt[] | null>(null);
+  const [coverageRadius, setCoverageRadius] = useState<number | null>(null);
+  const [callout, setCallout] = useState<{ point: Pt; label: string | null } | null>(null);
   const [highlight, setHighlight] = useState<Pt | null>(null);
   const [underlayUrl, setUnderlayUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,6 +98,18 @@ export function FloorEditor({ floorId }: Props) {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [floorId, floor?.version, rulesVersion]);
+
+  // 覆盖图层开着时，图纸/规则（含保护半径）变更后自动按新条件重算，保证图上与结论一致
+  const overlayOn = coverageCells !== null;
+  useEffect(() => {
+    if (!overlayOn || !floor || !rules) return;
+    const exts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
+    const res = computeCoverage(floor.rooms, exts, rules.extinguisherRadiusM, true);
+    setCoverageRadius(rules.extinguisherRadiusM);
+    setCoverageCells(res.regions.flatMap((rg) => rg.cells));
+    setCallout(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayOn, floor?.version, rulesVersion, rules?.extinguisherRadiusM]);
 
   if (!floor || !rules) {
     return <div className="page">楼层不存在。<Link to="/">返回首页</Link></div>;
@@ -227,10 +241,44 @@ export function FloorEditor({ floorId }: Props) {
     setTool('select');
   };
 
-  const showCoverage = () => {
+  const regionLabel = (rg: CoverageRegion) =>
+    `差 ${rg.gapM.toFixed(1)}m｜最近灭火器 ${rg.nearestDistanceM.toFixed(1)}m / 半径 ${rg.radiusM}m｜${rg.areaM2.toFixed(1)}㎡`;
+
+  /** 按楼层上全部灭火器点位与当前规则半径计算未覆盖栅格 */
+  const computeCells = () => {
     const exts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
-    const res = computeCoverage(floor.rooms, exts, 15, false);
-    setCoverageCells(res.cells.length ? res.cells : null);
+    const res = computeCoverage(floor.rooms, exts, rules.extinguisherRadiusM, true);
+    setCoverageRadius(rules.extinguisherRadiusM);
+    return res.regions;
+  };
+
+  const showCoverage = () => {
+    if (coverageCells) {
+      setCoverageCells(null);
+      setCoverageRadius(null);
+      setCallout(null);
+      return;
+    }
+    const regions = computeCells();
+    setCoverageCells(regions.flatMap((rg) => rg.cells));
+  };
+
+  /** 校验面板：定位并说明某块未覆盖区域 */
+  const locateRegion = (rg: CoverageRegion) => {
+    setCoverageRadius(rg.radiusM);
+    setCoverageCells(rg.cells);
+    setCallout({ point: rg.point, label: regionLabel(rg) });
+    setView((v) => ({ ...v, cx: rg.point.x, cy: rg.point.y }));
+    setTool('select');
+  };
+
+  /** 画布上直接点未覆盖栅格：保持全部未覆盖块可见，标注它所属区域差多远 */
+  const onCoverageCellDown = (pt: Pt) => {
+    const exts = floor.facilities.filter((f) => f.kind === 'extinguisher').map((f) => ({ x: f.x, y: f.y }));
+    const res = computeCoverage(floor.rooms, exts, rules.extinguisherRadiusM, true);
+    setCoverageCells(res.regions.flatMap((rg) => rg.cells));
+    const rg = res.regions.find((r) => r.cells.some((c) => c.x === pt.x && c.y === pt.y));
+    if (rg) setCallout({ point: rg.point, label: regionLabel(rg) });
   };
 
   const importUnderlay = async (file: File) => {
@@ -375,6 +423,9 @@ export function FloorEditor({ floorId }: Props) {
             draftPoints={draftPoints}
             draftCursor={draftCursor}
             coverageCells={coverageCells}
+            coverageRadiusM={coverageRadius}
+            onCoverageCellPointerDown={(pt) => onCoverageCellDown(pt)}
+            callout={callout}
             highlight={highlight}
             markPt={null}
             onRoomPointerDown={onRoomDown}
@@ -391,6 +442,7 @@ export function FloorEditor({ floorId }: Props) {
           busy={busy}
           rules={rules}
           onLocate={locate}
+          onLocateRegion={locateRegion}
         />
         {selRoom && (
           <section>
